@@ -6,7 +6,7 @@ __pycache__/
 *.o
 *.pth
 *.npy
-*.ipynb
+# *.ipynb
 *.pyc
 *.pyd
 *.egg-info
