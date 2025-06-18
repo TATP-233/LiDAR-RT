@@ -211,7 +211,35 @@ def training(args):
         for gaussians in gaussians_assets:
             loss_reg += args.opt.lambda_reg * gaussians.box_reg_loss()
 
-        loss = loss_depth + loss_intensity + loss_raydrop + loss_cd + loss_reg
+        # === 透明度稀疏化损失 ===
+        loss_opacity_sparse = 0
+        if hasattr(args.opt, 'sparse_after_iter') and hasattr(args.opt, 'lambda_opacity_sparse') and \
+           args.opt.sparse_after_iter > 0 and iteration > args.opt.sparse_after_iter:
+            
+            total_points = 0
+            for i, gaussians in enumerate(gaussians_assets):
+                # 获取透明度值 (已经通过sigmoid激活，范围在0-1之间)
+                opacity = gaussians.get_opacity  # shape: (N, 1)
+                total_points += opacity.shape[0]
+                
+                # 改进的稀疏化损失计算
+                # 1. 使用更激进的函数，让中间值的惩罚更大
+                # 2. 对接近阈值的点给予更大的惩罚
+                thresh = args.opt.thresh_opa_prune if hasattr(args.opt, 'thresh_opa_prune') else 0.003
+                
+                # 方法1：双重惩罚 - 既惩罚中间值，又特别惩罚接近阈值的点
+                distance_to_boundary = torch.min(opacity, 1.0 - opacity)
+                middle_penalty = distance_to_boundary  # 中间值惩罚
+                
+                # 对接近阈值但还没被删除的点给予额外惩罚
+                close_to_thresh = torch.exp(-((opacity - thresh) / (thresh * 2))**2)  # 高斯函数，在阈值附近值最大
+                threshold_penalty = close_to_thresh * opacity * 0.1  # 额外惩罚权重
+                
+                # 总的稀疏化损失
+                gaussian_sparse_loss = args.opt.lambda_opacity_sparse * (middle_penalty.mean() + threshold_penalty.mean())
+                loss_opacity_sparse += gaussian_sparse_loss
+
+        loss = loss_depth + loss_intensity + loss_raydrop + loss_cd + loss_reg + loss_opacity_sparse
         loss.backward()
 
         with torch.no_grad():
@@ -258,6 +286,7 @@ def training(args):
                 "ema_loss": 0.4 * loss + 0.6 * ema_loss_for_log,
                 "points_num": torch.tensor(points_num).float(),
                 "depth_mse": torch.tensor(depth_mse).float(),
+                "opacity_sparse_loss": torch.tensor(loss_opacity_sparse).float(),
             }
 
             reduced_losses = {k: torch.mean(v) for k, v in loss_stats.items()}

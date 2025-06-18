@@ -11,7 +11,7 @@ from lib.utils.camera_utils import cameraList_from_camInfos
 from lib.utils.general_utils import build_rotation
 from lib.utils.graphics_utils import BasicPointCloud
 from PIL import Image
-
+from tqdm import tqdm
 
 class SceneLidar(Scene):
     def __init__(self, args, waymo_raw_pkg, shuffle=True, resize_ratio=1, test=False):
@@ -83,17 +83,52 @@ class SceneLidar(Scene):
         all_points = []
         all_intensity = []
         all_normals = []
-        for frame in range(frame_range[0], frame_range[1] + 1):
+        
+        # 创建法向量缓存目录
+        cache_dir = os.path.join(args.source_dir, "normal_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        print(f"Normal cache directory: {cache_dir}")
+        
+        for frame in tqdm(range(frame_range[0], frame_range[1] + 1)):
             lidar_pts, lidar_intensity = lidar.inverse_projection(frame)
-
-            points_lidar = o3d.geometry.PointCloud()
-            points_lidar.points = o3d.utility.Vector3dVector(
-                lidar_pts.cpu().numpy().astype(np.float64)
-            )
-            points_lidar.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamKNN(knn=6)
-            )
-            normals = torch.from_numpy(np.asarray(points_lidar.normals)).float()
+            
+            # 构建缓存文件路径
+            cache_file = os.path.join(cache_dir, f"normals_frame_{frame}.npy")
+            
+            # 检查缓存文件是否存在
+            if os.path.exists(cache_file):
+                # 从缓存加载法向量
+                try:
+                    normals = torch.from_numpy(np.load(cache_file)).float()
+                except Exception as e:
+                    # 如果加载失败，重新计算
+                    points_lidar = o3d.geometry.PointCloud()
+                    points_lidar.points = o3d.utility.Vector3dVector(
+                        lidar_pts.cpu().numpy().astype(np.float64)
+                    )
+                    points_lidar.estimate_normals(
+                        search_param=o3d.geometry.KDTreeSearchParamKNN(knn=6)
+                    )
+                    normals = torch.from_numpy(np.asarray(points_lidar.normals)).float()
+                    # 保存到缓存
+                    np.save(cache_file, normals.numpy())
+            else:
+                # 计算法向量
+                points_lidar = o3d.geometry.PointCloud()
+                points_lidar.points = o3d.utility.Vector3dVector(
+                    lidar_pts.cpu().numpy().astype(np.float64)
+                )
+                points_lidar.estimate_normals(
+                    search_param=o3d.geometry.KDTreeSearchParamKNN(knn=6)
+                )
+                normals = torch.from_numpy(np.asarray(points_lidar.normals)).float()
+                
+                # 保存到缓存
+                try:
+                    np.save(cache_file, normals.numpy())
+                except Exception as e:
+                    print(f"Warning: Failed to save cache for frame {frame}: {e}")
+            
             for gaussian_model in self.gaussians_assets[1:]:
                 bbox = gaussian_model.bounding_box
                 T = bbox.frame[frame][0].cpu()
@@ -289,6 +324,26 @@ class SceneLidar(Scene):
                     and iteration == args.opt.densify_from_iter
                 ):
                     gaussians.reset_opacity()
+
+            # Sparse
+            if iteration > args.opt.sparse_after_iter:
+                if iteration % 500 == 0:
+                    # Prune points with low opacity
+                    low_opacity = (gaussians.get_opacity < args.opt.thresh_opa_prune).squeeze()
+                    low_opacity_num = low_opacity.sum().item()
+                    prune_opacity_num += low_opacity_num
+                    
+                    # Prune points with small area
+                    scale = gaussians.get_scaling
+                    small_area = ((scale[:, 0] * scale[:, 1]) < 1e-4)
+                    small_area_num = small_area.sum().item()
+                    prune_scale_num += small_area_num
+
+                    prune_mask = torch.logical_or(low_opacity, small_area)
+                    gaussians.prune_points(prune_mask)
+
+                    if low_opacity_num + small_area_num > 0:
+                        print(f"Prune points in world: {prune_mask.sum().item()}, opacity: {low_opacity_num}, scale: {small_area_num}")
 
             # args.optimizer step
             if iteration < args.opt.iterations:

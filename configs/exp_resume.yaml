@@ -2,10 +2,10 @@ parent_config: configs/base.yaml
 
 model_dir: "output"
 task_name: default
-exp_name: "0618"
+exp_name: test
 
 testing_iterations: 1000
-saving_iterations: [15000, 20000, 25000, 30000]
+saving_iterations: [0, 15000, 20000, 25000, 30000, 35000, 40000]
 visual_interval: 1000
 
 model:
@@ -17,8 +17,8 @@ model:
   sh_degree: 3
 
 opt:
-  iterations: 30_000
-  position_lr_max_steps: 30_000
+  iterations: 40_000
+  position_lr_max_steps: 40_000
 
   densification_interval: 100
   opacity_reset_interval: 3000
@@ -44,14 +44,15 @@ opt:
   use_rayhit: True
 
   # 透明度稀疏化相关参数
-  sparse_after_iter: 20_000
-  lambda_opacity_sparse: 0.025
+  sparse_after_iter: 30_000
+  lambda_opacity_sparse: 0.05
 
   use_normal_init: True
   use_voxel_init: True
 
+
 refine:
-  use_refine: True
+  use_refine: False
   use_spatial: True
   use_rot: False
 

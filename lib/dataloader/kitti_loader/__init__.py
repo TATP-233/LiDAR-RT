@@ -3,7 +3,7 @@ import os
 import pickle
 import xml.etree.ElementTree as ET
 
-import cv2
+from tqdm import tqdm
 import numpy as np
 import torch
 from lib.scene import BoundingBox, LiDARSensor
@@ -203,34 +203,44 @@ def load_kitti_raw(base_dir, args):
                 last_ego2world = ego2world[pre_frame]
                 break
 
-    for frame in range(frames[0], frames[1] + 1):
+    for frame in tqdm(range(frames[0], frames[1] + 1)):
         xyzs, intensities = lidar_points[frame][:, :3], lidar_points[frame][:, 3]
-        x, y, z = xyzs[:, 0], xyzs[:, 1], xyzs[:, 2]
-        dists = np.linalg.norm(lidar_points[frame][:, :3], axis=1)
+        dists = np.linalg.norm(xyzs, axis=1)
 
+        # 计算方位角和仰角
+        azimuth = np.arctan2(xyzs[:, 1], xyzs[:, 0])
+        inclination = np.arctan2(xyzs[:, 2], np.sqrt(xyzs[:, 0]**2 + xyzs[:, 1]**2))
+
+        # 计算像素索引
+        w_idx = np.round((azimuth - azimuth_left) / h_res).astype(int)
+        h_idx = np.round((inclination - inc_top) / v_res).astype(int)
+
+        # 创建有效点掩码
+        valid_mask = (dists <= max_depth) & (w_idx >= 0) & (w_idx < W) & (h_idx >= 0) & (h_idx < H)
+        
+        # 初始化range和intensity图像
         range_map = np.ones((H, W)) * -1
         intensity_map = np.ones((H, W)) * -1
 
-        for xyz, intensity, dist in zip(xyzs, intensities, dists):
-            x, y, z = xyz
-            azimuth = np.arctan2(y, x)
-            inclination = np.arctan2(z, np.sqrt(x**2 + y**2))
+        # 使用掩码筛选有效点
+        valid_h = h_idx[valid_mask]
+        valid_w = w_idx[valid_mask]
+        valid_dists = dists[valid_mask]
+        valid_intensities = intensities[valid_mask]
 
-            if dist > max_depth:
-                continue
+        # 创建索引数组
+        indices = np.lexsort((valid_dists, valid_h, valid_w))
+        valid_h = valid_h[indices]
+        valid_w = valid_w[indices]
+        valid_dists = valid_dists[indices]
+        valid_intensities = valid_intensities[indices]
 
-            w_idx = np.round((azimuth - azimuth_left) / h_res).astype(int)
-            h_idx = np.round((inclination - inc_top) / v_res).astype(int)
-
-            if (w_idx < 0) or (w_idx >= W) or (h_idx < 0) or (h_idx >= H):
-                continue
-
-            if range_map[h_idx, w_idx] == -1:
-                range_map[h_idx, w_idx] = dist
-                intensity_map[h_idx, w_idx] = intensity
-            elif range_map[h_idx, w_idx] > dist:
-                range_map[h_idx, w_idx] = dist
-                intensity_map[h_idx, w_idx] = intensity
+        # 使用unique操作找到每个像素位置的最小距离点
+        _, unique_idx = np.unique(np.column_stack((valid_h, valid_w)), axis=0, return_index=True)
+        
+        # 更新range和intensity图像
+        range_map[valid_h[unique_idx], valid_w[unique_idx]] = valid_dists[unique_idx]
+        intensity_map[valid_h[unique_idx], valid_w[unique_idx]] = valid_intensities[unique_idx]
 
         range_image_r1 = np.stack([range_map, intensity_map], axis=-1)
         range_image_r2 = np.ones_like(range_image_r1) * -1

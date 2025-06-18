@@ -23,6 +23,10 @@ opt:
   sh_increase_interval: 1000
   lambda_dssim: 0.2
   lambda_distortion: 0.0
+  
+  # 透明度稀疏化默认参数
+  sparse_after_iter: -1  # 默认不启用
+  lambda_opacity_sparse: 0.0
 
   
 
